@@ -61,13 +61,60 @@ try {
 
 | Method                                   | Description                                                                       | Notes                                                                                                   |
 |------------------------------------------|-----------------------------------------------------------------------------------|---------------------------------------------------------------------------------------------------------|
-| `static open($filename): MediaFile`      | Detects file type and format and calls constructor with these parameters.         | Throws an `\Exception` if file is not a media or is not accessible.                                     |
+| `static open($filename): MediaFile`      | Detects file type and format and calls constructor with these parameters.         | Throws an `UnknownFormatException` (a `FileAccessException`) with an explainable report if the format is not recognised. |
+| `static inspect($filename): DetectionReport` | Runs detection without constructing an adapter.                               | Returns the winner, all scored candidates, confidence, stage and timing.                               |
+| `static getLastDetectionReport(): DetectionReport` | Report produced by the last `open()`/`inspect()` call.                    | Null before the first detection.                                                                       |
 | `isAudio(): boolean`                     | Returns true if media is just audio.                                              |                                                                                                         |
 | `isVideo(): boolean`                     | Returns true if media is a video with audio.                                      |                                                                                                         |
 | `isContainer(): boolean`                 | Returns true if media is also a container (can store multiple audios and videos). |                                                                                                         |
 | `getFormat(): string`                    | Returns media file format.                                                        |                                                                                                         |
 | `getAudio(): AudioAdapter`               | Returns an `AudioAdapter` interface for audio.                                    |                                                                                                         |
 | `getVideo(): VideoAdapter`               | Returns an `VideoAdapter` interface for video.                                    |                                                                                                         |
+
+## Format detection
+
+Detection lives in one self-contained component,
+`wapmorgan\MediaFile\FormatDetector\FormatDetector`, which reads only the first
+64 bytes of a file. It replaces the previous first-match signature walk with a
+single, unified pipeline:
+
+1. **Scored content probes.** Every probe (WAV/RIFF, FLAC, Ogg, AMR, ASF GUID,
+   EBML/Matroska, ISO BMFF, MPEG audio, ADTS) reports on the same 0–100 scale.
+   The highest-scoring probe above the threshold (`THRESHOLD = 25`) wins, so
+   candidates from different signatures are ranked instead of picked by
+   iteration order.
+2. **Structured prefixes.** An ID3v2 tag is parsed and skipped so the MPEG
+   frame behind it is reached, and leading `free`/`skip` ISO BMFF boxes are
+   walked to find a `ftyp` box that does not sit at offset 4.
+3. **One cache, one key scheme.** Raw heads use `head:<hash>` keys, files use
+   `file:<hash of realpath, size and mtime>`; `clearCache()` resets both.
+4. **One fallback path.** Only when no content probe reaches the threshold is
+   the filename extension used, at a low score and explicitly labelled
+   `extension` in the report.
+5. **Explainable unknowns.** Unrecognised input still returns a
+   `DetectionReport` (and `open()` throws an `UnknownFormatException` carrying
+   it) with every near-miss candidate and a human-readable reason.
+
+`DetectionReport` exposes `getFormat()`, `getAdapter()`, `getScore()`,
+`getConfidence()` (`high` / `medium` / `low` / `none`), `getStage()`,
+`getCandidates()`, `getCacheKey()`, `isFromCache()`, `getTimeMs()` and
+`explain()`.
+
+### Head matrix
+
+A fixed-head probe matrix (synthetic 32- and 64-byte headers covering common
+formats, short samples, ID3 prefixes and late `ftyp` boxes) prints the hit
+adapter, confidence, score and average detection time:
+
+```sh
+php bin/head-matrix.php            # text table
+php bin/head-matrix.php --json     # one JSON object per cell
+php bin/head-matrix.php --cache    # verify the second lookup is cached
+php bin/head-matrix.php path/...   # also probe real files (first 64 bytes)
+```
+
+The detector itself has no third-party dependencies; its assertions run with
+`php tests/FormatDetectorTest.php` without `composer install`.
 
 ### AudioAdapter
 
